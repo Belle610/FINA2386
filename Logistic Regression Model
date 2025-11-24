@@ -1,0 +1,134 @@
+---
+title: 'Regression Analysis: Gender ~ Age + CountryOfExploitation + Citizenship'
+author: "Belle Bei"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+# 1. Install and Load Packages
+
+```{r packages}
+packages <- c("tidyverse", "readxl", "pROC", "broom")
+installed <- rownames(installed.packages())
+for (pkg in packages) {
+  if (!pkg %in% installed) install.packages(pkg, dependencies = TRUE)
+}
+library(tidyverse)
+library(readxl)
+library(pROC)
+library(broom)
+```
+
+# 2. Data Loading & Cleaning
+
+```{r data-cleaning}
+# Load data (ensure the file is in your working directory or provide the correct path)
+df <- read_excel("C:/Users/Belle Bei/OneDrive/桌面/Regression Data.xlsx", na = c("", "NA"))
+
+# Clean and preprocess
+df_clean <- df %>%
+  select(gender, ageBroad, CountryOfExploitation, citizenship) %>%
+  drop_na() %>%
+  filter(gender %in% c("Woman", "Man")) %>%
+  mutate(
+    gender_bin = ifelse(gender == "Woman", 1, 0),
+    across(c(ageBroad, CountryOfExploitation, citizenship), as.factor)
+  )
+
+# Filter top categories to avoid overfitting (keep top 10 for each)
+top_age <- df_clean %>% count(ageBroad) %>% top_n(10, n) %>% pull(ageBroad)
+top_exp <- df_clean %>% count(CountryOfExploitation) %>% top_n(10, n) %>% pull(CountryOfExploitation)
+top_cit <- df_clean %>% count(citizenship) %>% top_n(10, n) %>% pull(citizenship)
+
+df_final <- df_clean %>%
+  filter(ageBroad %in% top_age, 
+         CountryOfExploitation %in% top_exp, 
+         citizenship %in% top_cit)
+
+# Summary of cleaned data
+cat("=== Data Summary ===\n")
+cat("Final Sample Size:", nrow(df_final), "\n")
+cat("Gender Distribution:\n")
+print(table(df_final$gender))
+cat("\nTop 5 Age Groups:\n")
+print(head(sort(table(df_final$ageBroad), decreasing = TRUE), 5))
+cat("\nTop 5 Exploitation Countries:\n")
+print(head(sort(table(df_final$CountryOfExploitation), decreasing = TRUE), 5))
+cat("\nTop 5 Citizenships:\n")
+print(head(sort(table(df_final$citizenship), decreasing = TRUE), 5))
+```
+# 3. Logistic Regression Model
+
+```{r regression-model}
+set.seed(42)
+train_idx <- sample(nrow(df_final), nrow(df_final) * 0.7)
+train <- df_final[train_idx, ]
+test <- df_final[-train_idx, ]
+
+logit_model <- glm(
+  gender_bin ~ ageBroad + CountryOfExploitation + citizenship,
+  data = train,
+  family = binomial(link = "logit"),
+  control = glm.control(maxit = 1500)
+)
+
+cat("\n=== Regression Model Summary ===\n")
+print(summary(logit_model))
+```
+
+# 4. Model Evaluation
+
+```{r model-evaluation}
+test$pred_prob <- predict(logit_model, newdata = test, type = "response")
+test$pred_class <- ifelse(test$pred_prob > 0.5, "Woman", "Man")
+
+conf_matrix <- table(
+  Actual = test$gender,
+  Predicted = test$pred_class
+)
+cat("\n=== Confusion Matrix ===\n")
+print(conf_matrix)
+
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+cat("\nAccuracy:", round(accuracy, 3), "\n")
+
+precision <- conf_matrix["Woman", "Woman"] / sum(conf_matrix[, "Woman"])
+recall <- conf_matrix["Woman", "Woman"] / sum(conf_matrix["Woman", ])
+f1 <- 2 * (precision * recall) / (precision + recall)
+cat("Precision (Woman):", round(precision, 3), "\n")
+cat("Recall (Woman):", round(recall, 3), "\n")
+cat("F1-Score (Woman):", round(f1, 3), "\n")
+
+roc_obj <- roc(as.numeric(test$gender == "Woman"), test$pred_prob)
+cat("\nAUC Score:", round(auc(roc_obj), 3), "\n")
+
+plot(roc_obj, main = paste0("ROC Curve (AUC = ", round(auc(roc_obj), 3), ")"))
+abline(a = 0, b = 1, lty = 2)
+```
+
+# 5. Feature Importance
+
+```{r feature-importance}
+coef_df <- tidy(logit_model) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(abs_coef = abs(estimate)) %>%
+  arrange(desc(abs_coef)) %>%
+  slice(1:10)
+
+cat("\n=== Top 10 Predictors of Gender ===\n")
+print(coef_df)
+
+ggplot(coef_df, aes(x = reorder(term, estimate), y = estimate, fill = estimate > 0)) +
+  geom_col() +
+  geom_text(aes(label = round(estimate, 2)), vjust = ifelse(coef_df$estimate > 0, 0.3, -0.3)) +
+  labs(title = "Top 10 Predictors of Gender", x = "Feature", y = "Logistic Coefficient") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_manual(values = c("#C73E1D", "#2E86AB"), labels = c("Male-Predominant", "Female-Predominant"))
+```
